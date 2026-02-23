@@ -24,7 +24,7 @@ concurrency:
 jobs:
   build:
     name: windows
-    runs-on: blacksmith-4vcpu-windows-2025
+    runs-on: windows-latest
 
     defaults:
       run:
