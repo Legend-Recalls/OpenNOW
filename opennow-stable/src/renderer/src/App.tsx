@@ -402,6 +402,7 @@ export function App(): JSX.Element {
   const regionsRequestRef = useRef(0);
   const launchInFlightRef = useRef(false);
   const exitPromptResolverRef = useRef<((confirmed: boolean) => void) | null>(null);
+  const hasShownQueueRef = useRef(false);
 
   // Session ref sync
   useEffect(() => {
@@ -1537,6 +1538,7 @@ export function App(): JSX.Element {
     setStreamingGame(game);
     updateLoadingStep("queue");
     setQueuePosition(undefined);
+    hasShownQueueRef.current = false; // Reset queue tracking for new launch
 
     try {
       const token = authSession?.tokens.idToken ?? authSession?.tokens.accessToken;
@@ -1639,7 +1641,11 @@ export function App(): JSX.Element {
           break;
         }
 
-        if (isInQueueMode) {
+        // Always show queue status at least once before transitioning to setup
+        if (!hasShownQueueRef.current) {
+          hasShownQueueRef.current = true;
+          updateLoadingStep("queue");
+        } else if (isInQueueMode) {
           updateLoadingStep("queue");
         } else if (polled.status === 1) {
           updateLoadingStep("setup");
