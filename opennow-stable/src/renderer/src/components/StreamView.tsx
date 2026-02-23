@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import type { JSX } from "react";
 import { Maximize, Minimize, Gamepad2, Loader2, LogOut, Clock3, AlertTriangle, Mic, MicOff, Zap, X } from "lucide-react";
 import type { StreamDiagnostics } from "../gfn/webrtcClient";
-import type { BypassQueueStatus } from "../App";
+import type { BypassQueueStatus, ReconnectState } from "../App";
 
 interface StreamViewProps {
   videoRef: React.Ref<HTMLVideoElement>;
@@ -50,6 +50,9 @@ interface StreamViewProps {
   onStartBypassQueue?: () => void;
   onCancelBypassQueue?: () => void;
   onSwitchToSecondary?: () => void;
+  // Reconnection props
+  reconnectState?: ReconnectState;
+  onCancelReconnection?: () => void;
 }
 
 function getRttColor(rttMs: number): string {
@@ -131,6 +134,8 @@ export function StreamView({
   onStartBypassQueue,
   onCancelBypassQueue,
   onSwitchToSecondary,
+  reconnectState,
+  onCancelReconnection,
 }: StreamViewProps): JSX.Element {
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [showHints, setShowHints] = useState(true);
@@ -286,7 +291,38 @@ export function StreamView({
         </div>
       )}
 
-      {!isConnecting && (
+      {/* Reconnection overlay */}
+      {reconnectState && !isConnecting && (
+        <div className="sv-reconnect">
+          <div className="sv-reconnect-backdrop" />
+          <div className="sv-reconnect-card">
+            <div className="sv-reconnect-icon">
+              <Loader2 size={48} className="sv-reconnect-spin" />
+            </div>
+            <h2 className="sv-reconnect-title">Connection Lost</h2>
+            <p className="sv-reconnect-text">
+              Attempting to reconnect to your session...
+            </p>
+            <div className="sv-reconnect-progress">
+              <div className="sv-reconnect-countdown">
+                {Math.ceil(reconnectState.timeRemainingMs / 1000)}s remaining
+              </div>
+              <div className="sv-reconnect-attempt">
+                Attempt {reconnectState.attemptNumber} of 3
+              </div>
+            </div>
+            <button
+              type="button"
+              className="sv-reconnect-cancel"
+              onClick={onCancelReconnection}
+            >
+              Cancel & Return to Home
+            </button>
+          </div>
+        </div>
+      )}
+
+      {!isConnecting && !reconnectState && (
         <div
           className={`sv-session-clock${showSessionClock ? " is-visible" : ""}`}
           title="Current gaming session elapsed time"

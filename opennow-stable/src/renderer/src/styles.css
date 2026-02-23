@@ -2920,6 +2920,133 @@ body.controller-mode {
 
 
 /* ======================================================
+   RECONNECTION OVERLAY (.sv-reconnect-)
+   ====================================================== */
+.sv-reconnect {
+  position: fixed;
+  inset: 0;
+  z-index: 1500;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+
+.sv-reconnect-backdrop {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(135deg, rgba(10, 10, 12, 0.96), rgba(19, 19, 22, 0.98), rgba(10, 10, 12, 0.96));
+  backdrop-filter: blur(8px);
+}
+
+.sv-reconnect-card {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  width: min(400px, calc(100vw - 48px));
+  padding: 32px 28px;
+  background: linear-gradient(180deg, rgba(20, 20, 24, 0.98), rgba(15, 15, 18, 0.98));
+  border: 1px solid var(--panel-border);
+  border-radius: var(--r-xl);
+  box-shadow: var(--shadow-lg);
+  animation: fade-in 300ms var(--ease);
+}
+
+.sv-reconnect-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 80px;
+  height: 80px;
+  border-radius: 50%;
+  background: rgba(251, 191, 36, 0.1);
+  border: 2px solid rgba(251, 191, 36, 0.25);
+}
+
+.sv-reconnect-spin {
+  color: var(--warning);
+  animation: spin 1s linear infinite;
+}
+
+.sv-reconnect-title {
+  margin: 0;
+  font-size: 1.4rem;
+  font-weight: 800;
+  color: var(--ink);
+  letter-spacing: 0.01em;
+  text-align: center;
+}
+
+.sv-reconnect-text {
+  margin: 0;
+  font-size: 0.94rem;
+  color: var(--ink-soft);
+  text-align: center;
+  line-height: 1.45;
+}
+
+.sv-reconnect-progress {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 14px 20px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--panel-border);
+  border-radius: var(--r-md);
+  min-width: 200px;
+}
+
+.sv-reconnect-countdown {
+  font-size: 1.2rem;
+  font-weight: 800;
+  color: var(--warning);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+}
+
+.sv-reconnect-attempt {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--ink-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.sv-reconnect-cancel {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  padding: 12px 20px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--panel-border-solid);
+  background: var(--bg-c);
+  color: var(--ink-soft);
+  font-size: 0.88rem;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background var(--t-fast), border-color var(--t-fast), color var(--t-fast), transform var(--t-fast);
+}
+
+.sv-reconnect-cancel:hover {
+  background: var(--card-hover);
+  border-color: var(--error-border);
+  color: var(--error);
+  transform: translateY(-1px);
+}
+
+.sv-reconnect-cancel:active {
+  transform: translateY(0);
+}
+
+
+/* ======================================================
    REDUCED MOTION
    ====================================================== */
 @media (prefers-reduced-motion: reduce) {

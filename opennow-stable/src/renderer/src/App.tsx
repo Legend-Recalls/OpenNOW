@@ -61,6 +61,20 @@ type LaunchErrorState = {
 // Bypass queue state machine
 export type BypassQueueStatus = "idle" | "queuing" | "ready" | "switching";
 
+// Reconnection state
+export type ReconnectState = {
+  game: GameInfo;
+  session: SessionInfo;
+  attemptNumber: number;
+  startedAt: number;
+  timeRemainingMs: number;
+} | null;
+
+// Reconnection constants
+const RECONNECT_TIMEOUT_MS = 30000;
+const RECONNECT_POLL_INTERVAL_MS = 2000;
+const MAX_RECONNECT_ATTEMPTS = 3;
+
 const APP_PAGE_ORDER: AppPage[] = ["home", "library", "settings"];
 
 const isMac = navigator.platform.toLowerCase().includes("mac");
@@ -273,6 +287,14 @@ export function App(): JSX.Element {
   const bypassAbortRef = useRef<AbortController | null>(null);
 
   // ---------------------------------------------------------------------------
+  // Reconnection State
+  // ---------------------------------------------------------------------------
+  const [reconnectState, setReconnectState] = useState<ReconnectState>(null);
+  // Refs for reconnection polling
+  const reconnectIntervalRef = useRef<number | null>(null);
+  const reconnectCountdownRef = useRef<number | null>(null);
+
+  // ---------------------------------------------------------------------------
   // Navigation
   // ---------------------------------------------------------------------------
   const [currentPage, setCurrentPage] = useState<AppPage>("home");
@@ -375,6 +397,7 @@ export function App(): JSX.Element {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const clientRef = useRef<GfnWebRtcClient | null>(null);
   const sessionRef = useRef<SessionInfo | null>(null);
+  const streamingGameRef = useRef<GameInfo | null>(null);
   const hasInitializedRef = useRef(false);
   const regionsRequestRef = useRef(0);
   const launchInFlightRef = useRef(false);
@@ -384,6 +407,10 @@ export function App(): JSX.Element {
   useEffect(() => {
     sessionRef.current = session;
   }, [session]);
+
+  useEffect(() => {
+    streamingGameRef.current = streamingGame;
+  }, [streamingGame]);
 
   useEffect(() => {
     document.body.classList.toggle("controller-mode", controllerConnected);
@@ -701,6 +728,167 @@ export function App(): JSX.Element {
   }, [streamWarning]);
 
   // ---------------------------------------------------------------------------
+  // Reconnection logic
+  // ---------------------------------------------------------------------------
+  const clearReconnectState = useCallback(() => {
+    if (reconnectIntervalRef.current !== null) {
+      window.clearInterval(reconnectIntervalRef.current);
+      reconnectIntervalRef.current = null;
+    }
+    if (reconnectCountdownRef.current !== null) {
+      window.clearTimeout(reconnectCountdownRef.current);
+      reconnectCountdownRef.current = null;
+    }
+    setReconnectState(null);
+  }, []);
+
+  const handleReconnectAttempt = useCallback(async (game: GameInfo, session: SessionInfo, attemptNumber: number): Promise<boolean> => {
+    console.log(`[App] Reconnection attempt ${attemptNumber}/${MAX_RECONNECT_ATTEMPTS} for session ${session.sessionId}`);
+    
+    try {
+      // Poll the session to check if it's still alive on the server
+      // Need to pass zone, streamingBaseUrl, serverIp - all available in session
+      const pollResult = await window.openNow.pollSession({
+        sessionId: session.sessionId,
+        zone: session.zone,
+        streamingBaseUrl: session.streamingBaseUrl,
+        serverIp: session.serverIp,
+        accountId: "primary",
+      });
+      
+      const sessionStatus = pollResult.status;
+      console.log(`[App] Session status during reconnect: ${sessionStatus}`);
+      
+      // Status 2 = starting, 3 = ready for streaming
+      if (sessionStatus === 2 || sessionStatus === 3) {
+        console.log("[App] Session still alive, attempting to reconnect signaling...");
+        return true;
+      }
+      
+      // Session is dead (status 4+ = ended/failed)
+      console.log(`[App] Session dead (status ${sessionStatus})`);
+      return false;
+    } catch (err) {
+      console.warn(`[App] Reconnection poll failed:`, err);
+      return false;
+    }
+  }, []);
+
+  const startReconnection = useCallback(async (game: GameInfo, session: SessionInfo) => {
+    // Cancel any existing reconnection
+    clearReconnectState();
+    
+    // Start first attempt
+    const attemptNumber = 1;
+    const startedAt = Date.now();
+    
+    setReconnectState({
+      game,
+      session,
+      attemptNumber,
+      startedAt,
+      timeRemainingMs: RECONNECT_TIMEOUT_MS,
+    });
+    
+    // Start countdown timer
+    const updateCountdown = (): void => {
+      setReconnectState((current) => {
+        if (!current) return null;
+        const elapsed = Date.now() - current.startedAt;
+        const remaining = Math.max(0, RECONNECT_TIMEOUT_MS - elapsed);
+        return { ...current, timeRemainingMs: remaining };
+      });
+    };
+    
+    reconnectCountdownRef.current = window.setInterval(updateCountdown, 500);
+    
+    // Start polling
+    const pollForReconnect = async (): Promise<void> => {
+      const currentState = reconnectStateRef.current;
+      if (!currentState) return;
+      
+      const success = await handleReconnectAttempt(currentState.game, currentState.session, currentState.attemptNumber);
+      
+      if (success) {
+        // Session is alive! Try to reconnect signaling
+        console.log("[App] Session alive, reconnecting signaling...");
+        clearReconnectState();
+        
+        // Reconnect signaling - this will trigger the offer handler
+        await window.openNow.connectSignaling({
+          sessionId: currentState.session.sessionId,
+          signalingServer: currentState.session.signalingServer,
+          signalingUrl: currentState.session.signalingUrl,
+        });
+        return;
+      }
+      
+      // Check if we've hit the timeout
+      const elapsed = Date.now() - currentState.startedAt;
+      if (elapsed >= RECONNECT_TIMEOUT_MS) {
+        // Timeout - try next attempt or give up
+        const nextAttempt = currentState.attemptNumber + 1;
+        
+        if (nextAttempt > MAX_RECONNECT_ATTEMPTS) {
+          // All attempts failed
+          console.log("[App] All reconnection attempts exhausted");
+          clearReconnectState();
+          // Now go to idle
+          clientRef.current?.dispose();
+          clientRef.current = null;
+          setStreamStatus("idle");
+          setSession(null);
+          setStreamingGame(null);
+          setLaunchError(null);
+          setSessionStartedAtMs(null);
+          setSessionElapsedSeconds(0);
+          setStreamWarning(null);
+          setEscHoldReleaseIndicator({ visible: false, progress: 0 });
+          setDiagnostics(defaultDiagnostics());
+          launchInFlightRef.current = false;
+          return;
+        }
+        
+        // Start next attempt
+        console.log(`[App] Reconnection timed out, starting attempt ${nextAttempt}`);
+        setReconnectState({
+          game: currentState.game,
+          session: currentState.session,
+          attemptNumber: nextAttempt,
+          startedAt: Date.now(),
+          timeRemainingMs: RECONNECT_TIMEOUT_MS,
+        });
+      }
+    };
+    
+    reconnectIntervalRef.current = window.setInterval(pollForReconnect, RECONNECT_POLL_INTERVAL_MS);
+  }, [clearReconnectState, handleReconnectAttempt]);
+
+  // Ref to track current reconnect state without needing it in deps
+  const reconnectStateRef = useRef<ReconnectState>(null);
+  useEffect(() => {
+    reconnectStateRef.current = reconnectState;
+  }, [reconnectState]);
+
+  const cancelReconnection = useCallback(() => {
+    console.log("[App] User cancelled reconnection");
+    clearReconnectState();
+    // Clean up and go to idle
+    clientRef.current?.dispose();
+    clientRef.current = null;
+    setStreamStatus("idle");
+    setSession(null);
+    setStreamingGame(null);
+    setLaunchError(null);
+    setSessionStartedAtMs(null);
+    setSessionElapsedSeconds(0);
+    setStreamWarning(null);
+    setEscHoldReleaseIndicator({ visible: false, progress: 0 });
+    setDiagnostics(defaultDiagnostics());
+    launchInFlightRef.current = false;
+  }, [clearReconnectState]);
+
+  // ---------------------------------------------------------------------------
   // Signaling events
   // ---------------------------------------------------------------------------
   useEffect(() => {
@@ -758,18 +946,31 @@ export function App(): JSX.Element {
           await clientRef.current?.addRemoteCandidate(event.candidate);
         } else if (event.type === "disconnected") {
           console.warn("Signaling disconnected:", event.reason);
-          clientRef.current?.dispose();
-          clientRef.current = null;
-          setStreamStatus("idle");
-          setSession(null);
-          setStreamingGame(null);
-          setLaunchError(null);
-          setSessionStartedAtMs(null);
-          setSessionElapsedSeconds(0);
-          setStreamWarning(null);
-          setEscHoldReleaseIndicator({ visible: false, progress: 0 });
-          setDiagnostics(defaultDiagnostics());
-          launchInFlightRef.current = false;
+          
+          // Check if we have an active session to reconnect to
+          const currentSession = sessionRef.current;
+          const currentGame = streamingGameRef.current;
+          
+          if (currentSession && currentGame) {
+            // Start reconnection process
+            console.log("[App] Starting reconnection process...");
+            await startReconnection(currentGame, currentSession);
+          } else {
+            // No session to reconnect to, go to idle
+            console.log("[App] No session to reconnect to, going to idle");
+            clientRef.current?.dispose();
+            clientRef.current = null;
+            setStreamStatus("idle");
+            setSession(null);
+            setStreamingGame(null);
+            setLaunchError(null);
+            setSessionStartedAtMs(null);
+            setSessionElapsedSeconds(0);
+            setStreamWarning(null);
+            setEscHoldReleaseIndicator({ visible: false, progress: 0 });
+            setDiagnostics(defaultDiagnostics());
+            launchInFlightRef.current = false;
+          }
         } else if (event.type === "error") {
           console.error("Signaling error:", event.message);
         }
@@ -1872,6 +2073,9 @@ export function App(): JSX.Element {
             onStartBypassQueue={() => { void handleStartBypassQueue(); }}
             onCancelBypassQueue={handleCancelBypassQueue}
             onSwitchToSecondary={() => { void handleSwitchToSecondary(); }}
+            // Reconnection props
+            reconnectState={reconnectState}
+            onCancelReconnection={cancelReconnection}
           />
         )}
         {streamStatus !== "streaming" && (
