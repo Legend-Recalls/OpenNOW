@@ -34,7 +34,7 @@ import type {
 import { getSettingsManager, type SettingsManager } from "./settings";
 
 import { createSession, pollSession, stopSession, getActiveSessions, claimSession } from "./gfn/cloudmatch";
-import { AuthService } from "./gfn/auth";
+import { AuthService, type AccountId } from "./gfn/auth";
 import {
   fetchLibraryGames,
   fetchMainGames,
@@ -171,12 +171,8 @@ if (bootstrapVideoPrefs.encoderPreference === "hardware") {
 app.commandLine.appendSwitch("ignore-gpu-blocklist");
 
 // --- Responsiveness flags ---
-// Keep default compositor frame pacing (vsync + frame cap) to avoid runaway
-// CPU usage from uncapped UI animations.
-// Prevent renderer throttling when the window is backgrounded or occluded.
 app.commandLine.appendSwitch("disable-renderer-backgrounding");
 app.commandLine.appendSwitch("disable-backgrounding-occluded-windows");
-// Remove getUserMedia FPS cap (not strictly needed for receive-only but avoids potential limits)
 app.commandLine.appendSwitch("max-gum-fps", "999");
 
 let mainWindow: BrowserWindow | null = null;
@@ -214,7 +210,6 @@ async function createMainWindow(): Promise<void> {
   });
 
   // Handle F11 fullscreen toggle — send to renderer so it uses W3C Fullscreen API
-  // (which enables navigator.keyboard.lock for Escape key capture)
   mainWindow.webContents.on("before-input-event", (event, input) => {
     if (input.key === "F11" && input.type === "keyDown") {
       event.preventDefault();
@@ -225,8 +220,6 @@ async function createMainWindow(): Promise<void> {
   });
 
   if (process.platform === "win32") {
-    // Keep native window fullscreen in sync with HTML fullscreen so Windows treats
-    // stream playback like a real fullscreen window instead of only DOM fullscreen.
     mainWindow.webContents.on("enter-html-full-screen", () => {
       if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isFullScreen()) {
         mainWindow.setFullScreen(true);
@@ -251,13 +244,17 @@ async function createMainWindow(): Promise<void> {
   });
 }
 
-async function resolveJwt(token?: string): Promise<string> {
-  return authService.resolveJwtToken(token);
+/**
+ * Resolve a JWT token for the given account slot.
+ * If an explicit token is provided it is used directly; otherwise we
+ * pull a fresh (auto-refreshed) token from the AuthService session.
+ */
+async function resolveJwt(token?: string, accountId: AccountId = "primary"): Promise<string> {
+  return authService.resolveJwtToken(token, accountId);
 }
 
 /**
  * Show a dialog asking the user how to handle a session conflict
- * Returns the user's choice: "resume", "new", or "cancel"
  */
 async function showSessionConflictDialog(): Promise<SessionConflictChoice> {
   if (!mainWindow || mainWindow.isDestroyed()) {
@@ -284,9 +281,6 @@ async function showSessionConflictDialog(): Promise<SessionConflictChoice> {
   }
 }
 
-/**
- * Check if an error indicates a session conflict
- */
 function isSessionConflictError(error: unknown): boolean {
   if (isSessionError(error)) {
     return error.isSessionConflict();
@@ -302,8 +296,13 @@ function rethrowSerializedSessionError(error: unknown): never {
 }
 
 function registerIpcHandlers(): void {
+  // ---------------------------------------------------------------------------
+  // Auth handlers
+  // ---------------------------------------------------------------------------
+
   ipcMain.handle(IPC_CHANNELS.AUTH_GET_SESSION, async (_event, payload: AuthSessionRequest = {}) => {
-    return authService.ensureValidSessionWithStatus(Boolean(payload.forceRefresh));
+    const accountId: AccountId = (payload.accountId === "secondary") ? "secondary" : "primary";
+    return authService.ensureValidSessionWithStatus(Boolean(payload.forceRefresh), accountId);
   });
 
   ipcMain.handle(IPC_CHANNELS.AUTH_GET_PROVIDERS, async () => {
@@ -311,38 +310,49 @@ function registerIpcHandlers(): void {
   });
 
   ipcMain.handle(IPC_CHANNELS.AUTH_GET_REGIONS, async (_event, payload: RegionsFetchRequest) => {
-    return authService.getRegions(payload?.token);
+    const accountId: AccountId = (payload?.accountId === "secondary") ? "secondary" : "primary";
+    return authService.getRegions(payload?.token, accountId);
   });
 
   ipcMain.handle(IPC_CHANNELS.AUTH_LOGIN, async (_event, payload: AuthLoginRequest) => {
     return authService.login(payload);
   });
 
-  ipcMain.handle(IPC_CHANNELS.AUTH_LOGOUT, async () => {
-    await authService.logout();
+  ipcMain.handle(IPC_CHANNELS.AUTH_LOGOUT, async (_event, accountId?: "primary" | "secondary") => {
+    const id: AccountId = (accountId === "secondary") ? "secondary" : "primary";
+    await authService.logout(id);
   });
 
+  // ---------------------------------------------------------------------------
+  // Subscription handler
+  // ---------------------------------------------------------------------------
+
   ipcMain.handle(IPC_CHANNELS.SUBSCRIPTION_FETCH, async (_event, payload: SubscriptionFetchRequest) => {
-    const token = await resolveJwt(payload?.token);
+    const accountId: AccountId = (payload?.accountId === "secondary") ? "secondary" : "primary";
+    const token = await resolveJwt(payload?.token, accountId);
     const streamingBaseUrl =
       payload?.providerStreamingBaseUrl ?? authService.getSelectedProvider().streamingServiceUrl;
     const userId = payload.userId;
 
-    // Fetch dynamic regions to get the VPC ID (handles Alliance partners correctly)
     const { vpcId } = await fetchDynamicRegions(token, streamingBaseUrl);
-
     return fetchSubscription(token, userId, vpcId ?? undefined);
   });
 
+  // ---------------------------------------------------------------------------
+  // Games handlers
+  // ---------------------------------------------------------------------------
+
   ipcMain.handle(IPC_CHANNELS.GAMES_FETCH_MAIN, async (_event, payload: GamesFetchRequest) => {
-    const token = await resolveJwt(payload?.token);
+    const accountId: AccountId = (payload?.accountId === "secondary") ? "secondary" : "primary";
+    const token = await resolveJwt(payload?.token, accountId);
     const streamingBaseUrl =
       payload?.providerStreamingBaseUrl ?? authService.getSelectedProvider().streamingServiceUrl;
     return fetchMainGames(token, streamingBaseUrl);
   });
 
   ipcMain.handle(IPC_CHANNELS.GAMES_FETCH_LIBRARY, async (_event, payload: GamesFetchRequest) => {
-    const token = await resolveJwt(payload?.token);
+    const accountId: AccountId = (payload?.accountId === "secondary") ? "secondary" : "primary";
+    const token = await resolveJwt(payload?.token, accountId);
     const streamingBaseUrl =
       payload?.providerStreamingBaseUrl ?? authService.getSelectedProvider().streamingServiceUrl;
     return fetchLibraryGames(token, streamingBaseUrl);
@@ -353,15 +363,21 @@ function registerIpcHandlers(): void {
   });
 
   ipcMain.handle(IPC_CHANNELS.GAMES_RESOLVE_LAUNCH_ID, async (_event, payload: ResolveLaunchIdRequest) => {
-    const token = await resolveJwt(payload?.token);
+    const accountId: AccountId = (payload?.accountId === "secondary") ? "secondary" : "primary";
+    const token = await resolveJwt(payload?.token, accountId);
     const streamingBaseUrl =
       payload?.providerStreamingBaseUrl ?? authService.getSelectedProvider().streamingServiceUrl;
     return resolveLaunchAppId(token, payload.appIdOrUuid, streamingBaseUrl);
   });
 
+  // ---------------------------------------------------------------------------
+  // Session handlers — all account-aware
+  // ---------------------------------------------------------------------------
+
   ipcMain.handle(IPC_CHANNELS.CREATE_SESSION, async (_event, payload: SessionCreateRequest) => {
     try {
-      const token = await resolveJwt(payload.token);
+      const accountId: AccountId = (payload?.accountId === "secondary") ? "secondary" : "primary";
+      const token = await resolveJwt(payload.token, accountId);
       const streamingBaseUrl = payload.streamingBaseUrl ?? authService.getSelectedProvider().streamingServiceUrl;
       return createSession({
         ...payload,
@@ -375,7 +391,8 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle(IPC_CHANNELS.POLL_SESSION, async (_event, payload: SessionPollRequest) => {
     try {
-      const token = await resolveJwt(payload.token);
+      const accountId: AccountId = (payload?.accountId === "secondary") ? "secondary" : "primary";
+      const token = await resolveJwt(payload.token, accountId);
       return pollSession({
         ...payload,
         token,
@@ -388,7 +405,8 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle(IPC_CHANNELS.STOP_SESSION, async (_event, payload: SessionStopRequest) => {
     try {
-      const token = await resolveJwt(payload.token);
+      const accountId: AccountId = (payload?.accountId === "secondary") ? "secondary" : "primary";
+      const token = await resolveJwt(payload.token, accountId);
       return stopSession({
         ...payload,
         token,
@@ -399,15 +417,22 @@ function registerIpcHandlers(): void {
     }
   });
 
-  ipcMain.handle(IPC_CHANNELS.GET_ACTIVE_SESSIONS, async (_event, token?: string, streamingBaseUrl?: string) => {
-    const jwt = await resolveJwt(token);
+  ipcMain.handle(IPC_CHANNELS.GET_ACTIVE_SESSIONS, async (
+    _event,
+    token?: string,
+    streamingBaseUrl?: string,
+    accountId?: "primary" | "secondary",
+  ) => {
+    const id: AccountId = (accountId === "secondary") ? "secondary" : "primary";
+    const jwt = await resolveJwt(token, id);
     const baseUrl = streamingBaseUrl ?? authService.getSelectedProvider().streamingServiceUrl;
     return getActiveSessions(jwt, baseUrl);
   });
 
   ipcMain.handle(IPC_CHANNELS.CLAIM_SESSION, async (_event, payload: SessionClaimRequest) => {
     try {
-      const token = await resolveJwt(payload.token);
+      const accountId: AccountId = (payload?.accountId === "secondary") ? "secondary" : "primary";
+      const token = await resolveJwt(payload.token, accountId);
       const streamingBaseUrl = payload.streamingBaseUrl ?? authService.getSelectedProvider().streamingServiceUrl;
       return claimSession({
         ...payload,
@@ -422,6 +447,10 @@ function registerIpcHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.SESSION_CONFLICT_DIALOG, async (): Promise<SessionConflictChoice> => {
     return showSessionConflictDialog();
   });
+
+  // ---------------------------------------------------------------------------
+  // Signaling handlers
+  // ---------------------------------------------------------------------------
 
   ipcMain.handle(
     IPC_CHANNELS.CONNECT_SIGNALING,
@@ -467,7 +496,10 @@ function registerIpcHandlers(): void {
     return signalingClient.sendIceCandidate(payload);
   });
 
-  // Toggle fullscreen via IPC (for completeness)
+  // ---------------------------------------------------------------------------
+  // Window handlers
+  // ---------------------------------------------------------------------------
+
   ipcMain.handle(IPC_CHANNELS.TOGGLE_FULLSCREEN, async () => {
     if (mainWindow && !mainWindow.isDestroyed()) {
       const isFullScreen = mainWindow.isFullScreen();
@@ -475,14 +507,16 @@ function registerIpcHandlers(): void {
     }
   });
 
-  // Toggle pointer lock via IPC (F8 shortcut)
   ipcMain.handle(IPC_CHANNELS.TOGGLE_POINTER_LOCK, async () => {
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send("app:toggle-pointer-lock");
     }
   });
 
-  // Settings IPC handlers
+  // ---------------------------------------------------------------------------
+  // Settings handlers
+  // ---------------------------------------------------------------------------
+
   ipcMain.handle(IPC_CHANNELS.SETTINGS_GET, async (): Promise<Settings> => {
     return settingsManager.getAll();
   });
@@ -495,7 +529,10 @@ function registerIpcHandlers(): void {
     return settingsManager.reset();
   });
 
-  // Logs export IPC handler
+  // ---------------------------------------------------------------------------
+  // Logs handler
+  // ---------------------------------------------------------------------------
+
   ipcMain.handle(IPC_CHANNELS.LOGS_EXPORT, async (_event, format: "text" | "json" = "text"): Promise<string> => {
     return exportLogs(format);
   });

@@ -37,6 +37,8 @@ const resolutionOptions = ["1280x720", "1920x1080", "2560x1440", "3840x2160", "2
 const fpsOptions = [30, 60, 120, 144, 240];
 const SESSION_READY_POLL_INTERVAL_MS = 2000;
 const SESSION_READY_TIMEOUT_MS = 180000;
+// Poll the bypass queue every 3 seconds (slightly less aggressive than primary)
+const BYPASS_POLL_INTERVAL_MS = 3000;
 
 type GameSource = "main" | "library" | "public";
 type AppPage = "home" | "library" | "settings";
@@ -55,6 +57,9 @@ type LaunchErrorState = {
   description: string;
   codeLabel?: string;
 };
+
+// Bypass queue state machine
+export type BypassQueueStatus = "idle" | "queuing" | "ready" | "switching";
 
 const APP_PAGE_ORDER: AppPage[] = ["home", "library", "settings"];
 
@@ -237,7 +242,9 @@ function toLaunchErrorState(error: unknown, stage: StreamLoadingStatus): LaunchE
 }
 
 export function App(): JSX.Element {
+  // ---------------------------------------------------------------------------
   // Auth State
+  // ---------------------------------------------------------------------------
   const [authSession, setAuthSession] = useState<AuthSession | null>(null);
   const [providers, setProviders] = useState<LoginProvider[]>([]);
   const [providerIdpId, setProviderIdpId] = useState("");
@@ -250,10 +257,29 @@ export function App(): JSX.Element {
     text: string;
   } | null>(null);
 
+  // ---------------------------------------------------------------------------
+  // Secondary Account + Bypass Queue State
+  // ---------------------------------------------------------------------------
+  const [secondaryAuthSession, setSecondaryAuthSession] = useState<AuthSession | null>(null);
+  const [isLoggingInSecondary, setIsLoggingInSecondary] = useState(false);
+  const [secondaryLoginError, setSecondaryLoginError] = useState<string | null>(null);
+  const [bypassQueueStatus, setBypassQueueStatus] = useState<BypassQueueStatus>("idle");
+  const [bypassQueuePosition, setBypassQueuePosition] = useState<number | undefined>();
+  // The ready secondary SessionInfo to connect to once user clicks Switch
+  const bypassSessionRef = useRef<SessionInfo | null>(null);
+  // The game that was queued on the secondary account (same as primary)
+  const bypassGameRef = useRef<GameInfo | null>(null);
+  // AbortController to cancel background bypass polling
+  const bypassAbortRef = useRef<AbortController | null>(null);
+
+  // ---------------------------------------------------------------------------
   // Navigation
+  // ---------------------------------------------------------------------------
   const [currentPage, setCurrentPage] = useState<AppPage>("home");
 
+  // ---------------------------------------------------------------------------
   // Games State
+  // ---------------------------------------------------------------------------
   const [games, setGames] = useState<GameInfo[]>([]);
   const [libraryGames, setLibraryGames] = useState<GameInfo[]>([]);
   const [source, setSource] = useState<GameSource>("main");
@@ -262,7 +288,9 @@ export function App(): JSX.Element {
   const [variantByGameId, setVariantByGameId] = useState<Record<string, string>>({});
   const [isLoadingGames, setIsLoadingGames] = useState(false);
 
+  // ---------------------------------------------------------------------------
   // Settings State
+  // ---------------------------------------------------------------------------
   const [settings, setSettings] = useState<Settings>({
     resolution: "1920x1080",
     fps: 60,
@@ -291,7 +319,9 @@ export function App(): JSX.Element {
   const [regions, setRegions] = useState<StreamRegion[]>([]);
   const [subscriptionInfo, setSubscriptionInfo] = useState<SubscriptionInfo | null>(null);
 
+  // ---------------------------------------------------------------------------
   // Stream State
+  // ---------------------------------------------------------------------------
   const [session, setSession] = useState<SessionInfo | null>(null);
   const [streamStatus, setStreamStatus] = useState<StreamStatus>("idle");
   const [diagnostics, setDiagnostics] = useState<StreamDiagnostics>(defaultDiagnostics());
@@ -338,7 +368,9 @@ export function App(): JSX.Element {
     onBackAction: handleControllerBackAction,
   });
 
+  // ---------------------------------------------------------------------------
   // Refs
+  // ---------------------------------------------------------------------------
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const clientRef = useRef<GfnWebRtcClient | null>(null);
@@ -360,7 +392,9 @@ export function App(): JSX.Element {
     };
   }, [controllerConnected]);
 
+  // ---------------------------------------------------------------------------
   // Derived state
+  // ---------------------------------------------------------------------------
   const selectedProvider = useMemo(() => {
     return providers.find((p) => p.idpId === providerIdpId) ?? authSession?.provider ?? null;
   }, [providers, providerIdpId, authSession]);
@@ -418,7 +452,9 @@ export function App(): JSX.Element {
     return () => window.clearInterval(timer);
   }, [authSession, refreshNavbarActiveSession, streamStatus]);
 
+  // ---------------------------------------------------------------------------
   // Initialize app
+  // ---------------------------------------------------------------------------
   useEffect(() => {
     if (hasInitializedRef.current) return;
     hasInitializedRef.current = true;
@@ -430,13 +466,20 @@ export function App(): JSX.Element {
         setSettings(loadedSettings);
         setSettingsLoaded(true);
 
-        // Load providers and session (force refresh on startup restore)
+        // Load providers and primary session (force refresh on startup restore)
         setStartupStatusMessage("Restoring saved session and refreshing token...");
-        const [providerList, sessionResult] = await Promise.all([
+        const [providerList, sessionResult, secondaryResult] = await Promise.all([
           window.openNow.getLoginProviders(),
-          window.openNow.getAuthSession({ forceRefresh: true }),
+          window.openNow.getAuthSession({ forceRefresh: true, accountId: "primary" }),
+          window.openNow.getAuthSession({ forceRefresh: false, accountId: "secondary" }),
         ]);
         const persistedSession = sessionResult.session;
+
+        // Restore secondary session if it was previously logged in
+        if (secondaryResult.session) {
+          setSecondaryAuthSession(secondaryResult.session);
+          console.log("[App] Secondary account restored:", secondaryResult.session.user.displayName);
+        }
 
         if (sessionResult.refresh.outcome === "refreshed") {
           setStartupRefreshNotice({
@@ -458,7 +501,6 @@ export function App(): JSX.Element {
           setStartupStatusMessage("No saved session found.");
         }
 
-        // Update isInitializing FIRST so UI knows we're done loading
         setIsInitializing(false);
         setProviders(providerList);
         setAuthSession(persistedSession);
@@ -467,7 +509,6 @@ export function App(): JSX.Element {
         setProviderIdpId(activeProviderId);
 
         if (persistedSession) {
-          // Load regions
           const token = persistedSession.tokens.idToken ?? persistedSession.tokens.accessToken;
           const discovered = await window.openNow.getRegions({ token });
           setRegions(discovered);
@@ -479,7 +520,6 @@ export function App(): JSX.Element {
             setSubscriptionInfo(null);
           }
 
-          // Load games
           try {
             const mainGames = await window.openNow.fetchMainGames({
               token,
@@ -495,20 +535,17 @@ export function App(): JSX.Element {
               }, {} as Record<string, string>)
             );
 
-            // Also load library
             const libGames = await window.openNow.fetchLibraryGames({
               token,
               providerStreamingBaseUrl: persistedSession.provider.streamingServiceUrl,
             });
             setLibraryGames(libGames);
           } catch {
-            // Fallback to public games
             const publicGames = await window.openNow.fetchPublicGames();
             setGames(publicGames);
             setSource("public");
           }
         } else {
-          // Load public games for non-logged in users
           const publicGames = await window.openNow.fetchPublicGames();
           setGames(publicGames);
           setSource("public");
@@ -517,7 +554,6 @@ export function App(): JSX.Element {
       } catch (error) {
         console.error("Initialization failed:", error);
         setStartupStatusMessage("Session restore failed. Please sign in again.");
-        // Always set isInitializing to false even on error
         setIsInitializing(false);
       }
     };
@@ -576,7 +612,6 @@ export function App(): JSX.Element {
   const requestExitPrompt = useCallback((gameTitle: string): Promise<boolean> => {
     return new Promise((resolve) => {
       if (exitPromptResolverRef.current) {
-        // Close any previous pending prompt to avoid dangling promises.
         exitPromptResolverRef.current(false);
       }
       exitPromptResolverRef.current = resolve;
@@ -604,8 +639,7 @@ export function App(): JSX.Element {
     };
   }, []);
 
-  // Listen for F11 fullscreen toggle from main process (uses W3C Fullscreen API
-  // so navigator.keyboard.lock() can capture Escape in fullscreen)
+  // F11 fullscreen toggle from main process
   useEffect(() => {
     const unsubscribe = window.openNow.onToggleFullscreen(() => {
       if (document.fullscreenElement) {
@@ -631,7 +665,6 @@ export function App(): JSX.Element {
   // Restore focus to video element when navigating away from Settings during streaming
   useEffect(() => {
     if (streamStatus === "streaming" && currentPage !== "settings" && videoRef.current) {
-      // Small delay to let React finish rendering the new page
       const timer = window.setTimeout(() => {
         if (videoRef.current && document.activeElement !== videoRef.current) {
           videoRef.current.focus();
@@ -667,7 +700,9 @@ export function App(): JSX.Element {
     return () => window.clearTimeout(timer);
   }, [streamWarning]);
 
+  // ---------------------------------------------------------------------------
   // Signaling events
+  // ---------------------------------------------------------------------------
   useEffect(() => {
     const unsubscribe = window.openNow.onSignalingEvent(async (event: MainToRendererSignalingEvent) => {
       console.log(`[App] Signaling event: ${event.type}`, event.type === "offer" ? `(SDP ${event.sdp.length} chars)` : "", event.type === "remote-ice" ? event.candidate : "");
@@ -678,13 +713,6 @@ export function App(): JSX.Element {
             console.warn("[App] Received offer but no active session in sessionRef!");
             return;
           }
-          console.log("[App] Active session for offer:", JSON.stringify({
-            sessionId: activeSession.sessionId,
-            serverIp: activeSession.serverIp,
-            signalingServer: activeSession.signalingServer,
-            mediaConnectionInfo: activeSession.mediaConnectionInfo,
-            iceServersCount: activeSession.iceServers?.length,
-          }));
 
           if (!clientRef.current && videoRef.current && audioRef.current) {
             clientRef.current = new GfnWebRtcClient({
@@ -709,7 +737,6 @@ export function App(): JSX.Element {
                 console.log(`[App] Mic state: ${state.state}${state.deviceLabel ? ` (${state.deviceLabel})` : ""}`);
               },
             });
-            // Auto-start microphone if mode is enabled
             if (settings.microphoneMode !== "disabled") {
               void clientRef.current.startMicrophone();
             }
@@ -754,7 +781,9 @@ export function App(): JSX.Element {
     return () => unsubscribe();
   }, [settings]);
 
+  // ---------------------------------------------------------------------------
   // Save settings when changed
+  // ---------------------------------------------------------------------------
   const updateSetting = useCallback(async <K extends keyof Settings>(key: K, value: Settings[K]) => {
     setSettings((prev) => ({ ...prev, [key]: value }));
     if (settingsLoaded) {
@@ -762,16 +791,17 @@ export function App(): JSX.Element {
     }
   }, [settingsLoaded]);
 
-  // Login handler
+  // ---------------------------------------------------------------------------
+  // Primary login handler
+  // ---------------------------------------------------------------------------
   const handleLogin = useCallback(async () => {
     setIsLoggingIn(true);
     setLoginError(null);
     try {
-      const session = await window.openNow.login({ providerIdpId: providerIdpId || undefined });
+      const session = await window.openNow.login({ providerIdpId: providerIdpId || undefined, accountId: "primary" });
       setAuthSession(session);
       setProviderIdpId(session.provider.idpId);
 
-      // Load regions
       const token = session.tokens.idToken ?? session.tokens.accessToken;
       const discovered = await window.openNow.getRegions({ token });
       setRegions(discovered);
@@ -783,7 +813,6 @@ export function App(): JSX.Element {
         setSubscriptionInfo(null);
       }
 
-      // Load games
       const mainGames = await window.openNow.fetchMainGames({
         token,
         providerStreamingBaseUrl: session.provider.streamingServiceUrl,
@@ -792,7 +821,6 @@ export function App(): JSX.Element {
       setSource("main");
       setSelectedGameId(mainGames[0]?.id ?? "");
 
-      // Load library
       const libGames = await window.openNow.fetchLibraryGames({
         token,
         providerStreamingBaseUrl: session.provider.streamingServiceUrl,
@@ -805,9 +833,62 @@ export function App(): JSX.Element {
     }
   }, [loadSubscriptionInfo, providerIdpId]);
 
-  // Logout handler
+  // ---------------------------------------------------------------------------
+  // Secondary account login handler
+  // ---------------------------------------------------------------------------
+  const handleLoginSecondary = useCallback(async () => {
+    setIsLoggingInSecondary(true);
+    setSecondaryLoginError(null);
+    try {
+      // Use the same provider as the primary account
+      const session = await window.openNow.login({
+        providerIdpId: authSession?.provider.idpId || providerIdpId || undefined,
+        accountId: "secondary",
+      });
+      setSecondaryAuthSession(session);
+      console.log("[App] Secondary account logged in:", session.user.displayName);
+    } catch (error) {
+      setSecondaryLoginError(error instanceof Error ? error.message : "Login failed");
+    } finally {
+      setIsLoggingInSecondary(false);
+    }
+  }, [authSession?.provider.idpId, providerIdpId]);
+
+  // ---------------------------------------------------------------------------
+  // Secondary account logout handler
+  // ---------------------------------------------------------------------------
+  const handleLogoutSecondary = useCallback(async () => {
+    // Cancel any active bypass queue first
+    if (bypassAbortRef.current) {
+      bypassAbortRef.current.abort();
+      bypassAbortRef.current = null;
+    }
+    bypassSessionRef.current = null;
+    bypassGameRef.current = null;
+    setBypassQueueStatus("idle");
+    setBypassQueuePosition(undefined);
+
+    await window.openNow.logout("secondary");
+    setSecondaryAuthSession(null);
+    setSecondaryLoginError(null);
+    console.log("[App] Secondary account logged out");
+  }, []);
+
+  // ---------------------------------------------------------------------------
+  // Primary logout handler
+  // ---------------------------------------------------------------------------
   const handleLogout = useCallback(async () => {
-    await window.openNow.logout();
+    // Also cancel bypass queue if running
+    if (bypassAbortRef.current) {
+      bypassAbortRef.current.abort();
+      bypassAbortRef.current = null;
+    }
+    bypassSessionRef.current = null;
+    bypassGameRef.current = null;
+    setBypassQueueStatus("idle");
+    setBypassQueuePosition(undefined);
+
+    await window.openNow.logout("primary");
     setAuthSession(null);
     setGames([]);
     setLibraryGames([]);
@@ -821,7 +902,9 @@ export function App(): JSX.Element {
     setSource("public");
   }, []);
 
+  // ---------------------------------------------------------------------------
   // Load games handler
+  // ---------------------------------------------------------------------------
   const loadGames = useCallback(async (targetSource: GameSource) => {
     setIsLoadingGames(true);
     try {
@@ -850,6 +933,9 @@ export function App(): JSX.Element {
     }
   }, [authSession, effectiveStreamingBaseUrl]);
 
+  // ---------------------------------------------------------------------------
+  // Claim and connect to an existing session (primary account)
+  // ---------------------------------------------------------------------------
   const claimAndConnectSession = useCallback(async (existingSession: ActiveSessionInfo): Promise<void> => {
     const token = authSession?.tokens.idToken ?? authSession?.tokens.accessToken;
     if (!token) {
@@ -873,13 +959,6 @@ export function App(): JSX.Element {
       },
     });
 
-    console.log("Claimed session:", {
-      sessionId: claimed.sessionId,
-      signalingServer: claimed.signalingServer,
-      signalingUrl: claimed.signalingUrl,
-      status: claimed.status,
-    });
-
     await sleep(1000);
 
     setSession(claimed);
@@ -893,7 +972,345 @@ export function App(): JSX.Element {
     });
   }, [authSession, effectiveStreamingBaseUrl, settings]);
 
-  // Play game handler
+  // ---------------------------------------------------------------------------
+  // START BYPASS QUEUE — runs in background on secondary account, same game
+  // ---------------------------------------------------------------------------
+  const handleStartBypassQueue = useCallback(async () => {
+    if (!secondaryAuthSession) {
+      console.warn("[Bypass] No secondary account logged in");
+      return;
+    }
+    if (!streamingGame) {
+      console.warn("[Bypass] No current game to queue for");
+      return;
+    }
+    if (bypassQueueStatus !== "idle") {
+      console.warn("[Bypass] Bypass queue already active");
+      return;
+    }
+
+    // Cancel any previous bypass poll
+    if (bypassAbortRef.current) {
+      bypassAbortRef.current.abort();
+    }
+    const abort = new AbortController();
+    bypassAbortRef.current = abort;
+    bypassSessionRef.current = null;
+    bypassGameRef.current = streamingGame;
+
+    setBypassQueueStatus("queuing");
+    setBypassQueuePosition(undefined);
+
+    console.log(`[Bypass] Starting bypass queue for "${streamingGame.title}" on secondary account`);
+
+    try {
+      const secondaryToken = secondaryAuthSession.tokens.idToken ?? secondaryAuthSession.tokens.accessToken;
+      const streamingBaseUrl = secondaryAuthSession.provider.streamingServiceUrl;
+
+      // Resolve appId for this game (same logic as primary handlePlayGame)
+      const selectedVariantId = variantByGameId[streamingGame.id] ?? defaultVariantId(streamingGame);
+      let appId: string | null = null;
+
+      if (isNumericId(selectedVariantId)) {
+        appId = selectedVariantId;
+      } else if (isNumericId(streamingGame.launchAppId)) {
+        appId = streamingGame.launchAppId;
+      }
+
+      if (!appId) {
+        try {
+          const resolved = await window.openNow.resolveLaunchAppId({
+            token: secondaryToken,
+            providerStreamingBaseUrl: streamingBaseUrl,
+            appIdOrUuid: streamingGame.uuid ?? selectedVariantId,
+            accountId: "secondary",
+          });
+          if (resolved && isNumericId(resolved)) {
+            appId = resolved;
+          }
+        } catch {
+          // ignore resolution errors
+        }
+      }
+
+      if (!appId) {
+        throw new Error("Could not resolve appId for bypass queue");
+      }
+
+      if (abort.signal.aborted) return;
+
+      // Check if secondary already has an active session for this game
+      try {
+        const existingSessions = await window.openNow.getActiveSessions(
+          secondaryToken,
+          streamingBaseUrl,
+          "secondary",
+        );
+        if (existingSessions.length > 0 && existingSessions[0].serverIp) {
+          console.log("[Bypass] Secondary account already has active session, will use it directly");
+          const existing = existingSessions[0];
+          // Build a minimal SessionInfo-like object for switching
+          const readySession: SessionInfo = {
+            sessionId: existing.sessionId,
+            status: existing.status,
+            zone: "prod",
+            streamingBaseUrl,
+            serverIp: existing.serverIp!,
+            signalingServer: `${existing.serverIp}:443`,
+            signalingUrl: existing.signalingUrl ?? `wss://${existing.serverIp}:443/nvst/`,
+            iceServers: [],
+          };
+          bypassSessionRef.current = readySession;
+          setBypassQueueStatus("ready");
+          setBypassQueuePosition(undefined);
+          return;
+        }
+      } catch {
+        // ignore — proceed to create new session
+      }
+
+      if (abort.signal.aborted) return;
+
+      // Create a new session on the secondary account
+      const newSession = await window.openNow.createSession({
+        token: secondaryToken,
+        streamingBaseUrl,
+        appId,
+        internalTitle: streamingGame.title,
+        accountLinked: streamingGame.playType !== "INSTALL_TO_PLAY",
+        zone: "prod",
+        settings: {
+          resolution: settings.resolution,
+          fps: settings.fps,
+          maxBitrateMbps: settings.maxBitrateMbps,
+          codec: settings.codec,
+          colorQuality: settings.colorQuality,
+        },
+        accountId: "secondary",
+      });
+
+      if (abort.signal.aborted) return;
+
+      setBypassQueuePosition(newSession.queuePosition);
+      console.log(`[Bypass] Session created, initial queue position: ${newSession.queuePosition ?? "allocating"}`);
+
+      // Poll in background until ready or aborted
+      let currentSession = newSession;
+      while (true) {
+        if (abort.signal.aborted) {
+          console.log("[Bypass] Poll aborted");
+          // Try to stop the secondary session to clean up
+          try {
+            await window.openNow.stopSession({
+              token: secondaryToken,
+              streamingBaseUrl: currentSession.streamingBaseUrl ?? streamingBaseUrl,
+              serverIp: currentSession.serverIp,
+              zone: currentSession.zone,
+              sessionId: currentSession.sessionId,
+              accountId: "secondary",
+            });
+          } catch {
+            // best-effort cleanup
+          }
+          return;
+        }
+
+        await sleep(BYPASS_POLL_INTERVAL_MS);
+
+        if (abort.signal.aborted) return;
+
+        let polled: SessionInfo;
+        try {
+          polled = await window.openNow.pollSession({
+            token: secondaryToken,
+            streamingBaseUrl: currentSession.streamingBaseUrl ?? streamingBaseUrl,
+            serverIp: currentSession.serverIp,
+            zone: currentSession.zone,
+            sessionId: currentSession.sessionId,
+            accountId: "secondary",
+          });
+        } catch (err) {
+          console.warn("[Bypass] Poll error:", err);
+          continue;
+        }
+
+        currentSession = polled;
+        setBypassQueuePosition(polled.queuePosition);
+
+        console.log(`[Bypass] Poll: status=${polled.status}, queuePosition=${polled.queuePosition ?? "n/a"}`);
+
+        if (isSessionReadyForConnect(polled.status)) {
+          if (abort.signal.aborted) return;
+          console.log("[Bypass] Secondary session is READY");
+          bypassSessionRef.current = polled;
+          setBypassQueueStatus("ready");
+          setBypassQueuePosition(undefined);
+          return;
+        }
+      }
+    } catch (error) {
+      if (abort.signal.aborted) return;
+      console.error("[Bypass] Bypass queue error:", error);
+      setBypassQueueStatus("idle");
+      setBypassQueuePosition(undefined);
+      bypassSessionRef.current = null;
+      bypassGameRef.current = null;
+    }
+  }, [
+    secondaryAuthSession,
+    streamingGame,
+    bypassQueueStatus,
+    settings,
+    variantByGameId,
+  ]);
+
+  // ---------------------------------------------------------------------------
+  // Cancel bypass queue
+  // ---------------------------------------------------------------------------
+  const handleCancelBypassQueue = useCallback(() => {
+    if (bypassAbortRef.current) {
+      bypassAbortRef.current.abort();
+      bypassAbortRef.current = null;
+    }
+    bypassSessionRef.current = null;
+    bypassGameRef.current = null;
+    setBypassQueueStatus("idle");
+    setBypassQueuePosition(undefined);
+    console.log("[Bypass] Bypass queue cancelled");
+  }, []);
+
+  // ---------------------------------------------------------------------------
+  // SWITCH TO SECONDARY — stop primary, connect to ready secondary session
+  // ---------------------------------------------------------------------------
+  const handleSwitchToSecondary = useCallback(async () => {
+    const readySession = bypassSessionRef.current;
+    const game = bypassGameRef.current;
+
+    if (!readySession || !secondaryAuthSession) {
+      console.warn("[Bypass] Cannot switch: no ready secondary session or no secondary account");
+      return;
+    }
+
+    setBypassQueueStatus("switching");
+
+    try {
+      // 1. Stop the current primary stream cleanly
+      resolveExitPrompt(false);
+      await window.openNow.disconnectSignaling().catch(() => {});
+
+      const currentPrimarySession = sessionRef.current;
+      if (currentPrimarySession) {
+        const primaryToken = authSession?.tokens.idToken ?? authSession?.tokens.accessToken;
+        try {
+          await window.openNow.stopSession({
+            token: primaryToken || undefined,
+            streamingBaseUrl: currentPrimarySession.streamingBaseUrl,
+            serverIp: currentPrimarySession.serverIp,
+            zone: currentPrimarySession.zone,
+            sessionId: currentPrimarySession.sessionId,
+            accountId: "primary",
+          });
+        } catch (err) {
+          console.warn("[Bypass] Failed to stop primary session (continuing anyway):", err);
+        }
+      }
+
+      clientRef.current?.dispose();
+      clientRef.current = null;
+
+      // 2. Reset primary stream state
+      setSession(null);
+      sessionRef.current = null;
+      setStreamStatus("idle");
+      setStreamingGame(null);
+      setNavbarActiveSession(null);
+      setLaunchError(null);
+      setSessionStartedAtMs(null);
+      setSessionElapsedSeconds(0);
+      setStreamWarning(null);
+      setEscHoldReleaseIndicator({ visible: false, progress: 0 });
+      setDiagnostics(defaultDiagnostics());
+
+      // 3. Clear bypass queue state
+      bypassAbortRef.current = null;
+      bypassSessionRef.current = null;
+      bypassGameRef.current = null;
+      setBypassQueueStatus("idle");
+      setBypassQueuePosition(undefined);
+
+      // 4. Short pause to let state settle
+      await sleep(500);
+
+      // 5. Claim the ready secondary session so the server knows we're connecting
+      const secondaryToken = secondaryAuthSession.tokens.idToken ?? secondaryAuthSession.tokens.accessToken;
+      const streamingBaseUrl = secondaryAuthSession.provider.streamingServiceUrl;
+
+      console.log("[Bypass] Claiming secondary session:", readySession.sessionId);
+
+      let claimedSession: SessionInfo;
+      try {
+        claimedSession = await window.openNow.claimSession({
+          token: secondaryToken,
+          streamingBaseUrl,
+          serverIp: readySession.serverIp,
+          sessionId: readySession.sessionId,
+          accountId: "secondary",
+          settings: {
+            resolution: settings.resolution,
+            fps: settings.fps,
+            maxBitrateMbps: settings.maxBitrateMbps,
+            codec: settings.codec,
+            colorQuality: settings.colorQuality,
+          },
+        });
+      } catch (claimErr) {
+        // If claim fails, fall back to connecting with the polled session data directly
+        console.warn("[Bypass] Claim failed, trying direct connect:", claimErr);
+        claimedSession = readySession;
+      }
+
+      // 6. Set up as the new active session
+      setSession(claimedSession);
+      sessionRef.current = claimedSession;
+      setStreamingGame(game);
+      setQueuePosition(undefined);
+      setSessionStartedAtMs(Date.now());
+      setSessionElapsedSeconds(0);
+      setStreamWarning(null);
+      setStreamStatus("connecting");
+      launchInFlightRef.current = false;
+
+      // 7. Connect signaling on the secondary session
+      await window.openNow.connectSignaling({
+        sessionId: claimedSession.sessionId,
+        signalingServer: claimedSession.signalingServer,
+        signalingUrl: claimedSession.signalingUrl,
+      });
+
+      console.log("[Bypass] Successfully switched to secondary session");
+    } catch (error) {
+      console.error("[Bypass] Switch to secondary failed:", error);
+      setBypassQueueStatus("idle");
+      setStreamStatus("idle");
+      setLaunchError(toLaunchErrorState(error, "connecting"));
+    }
+  }, [
+    authSession,
+    secondaryAuthSession,
+    settings,
+    resolveExitPrompt,
+  ]);
+
+  // ---------------------------------------------------------------------------
+  // Auto-switch: when primary session ends (signaling disconnected) and bypass is ready
+  // ---------------------------------------------------------------------------
+  // This is handled in the signaling event "disconnected" — after setting streamStatus to idle,
+  // the user sees the "Switch" button which they can click. We deliberately do NOT auto-switch
+  // without user action to avoid jarring experiences.
+
+  // ---------------------------------------------------------------------------
+  // Play game handler (primary)
+  // ---------------------------------------------------------------------------
   const handlePlayGame = useCallback(async (game: GameInfo) => {
     if (!selectedProvider) return;
 
@@ -924,7 +1341,6 @@ export function App(): JSX.Element {
       const token = authSession?.tokens.idToken ?? authSession?.tokens.accessToken;
       const selectedVariantId = variantByGameId[game.id] ?? defaultVariantId(game);
 
-      // Resolve appId
       let appId: string | null = null;
       if (isNumericId(selectedVariantId)) {
         appId = selectedVariantId;
@@ -963,7 +1379,6 @@ export function App(): JSX.Element {
           }
         } catch (error) {
           console.error("Failed to claim/resume session:", error);
-          // Continue to create new session
         }
       }
 
@@ -987,12 +1402,7 @@ export function App(): JSX.Element {
       setSession(newSession);
       setQueuePosition(newSession.queuePosition);
 
-      // Poll for readiness.
-      // Queue mode (>1): no timeout - users wait indefinitely and see position updates.
-      // Setup/Starting mode (0, 1, or undefined): 180s timeout applies - machine is starting.
       let finalSession: SessionInfo | null = null;
-      // Only in queue mode if queuePosition > 1 (actually waiting in line)
-      // queuePosition 0 or 1 means machine is being allocated, not queue wait
       let isInQueueMode = (newSession.queuePosition ?? 0) > 1;
       let timeoutStartAttempt = 1;
       const maxAttempts = Math.ceil(SESSION_READY_TIMEOUT_MS / SESSION_READY_POLL_INTERVAL_MS);
@@ -1013,13 +1423,9 @@ export function App(): JSX.Element {
         setSession(polled);
         setQueuePosition(polled.queuePosition);
 
-        // Check if queue just cleared - transition from queue mode to setup mode
         const wasInQueueMode = isInQueueMode;
-        // Queue mode only when position > 1 (actually waiting behind others)
-        // Position 0 or 1 means machine allocation is starting
         isInQueueMode = (polled.queuePosition ?? 0) > 1;
         if (wasInQueueMode && !isInQueueMode) {
-          // Queue just cleared, start timeout counting from now
           timeoutStartAttempt = attempt;
         }
 
@@ -1032,34 +1438,21 @@ export function App(): JSX.Element {
           break;
         }
 
-        // Update status based on session state
         if (isInQueueMode) {
           updateLoadingStep("queue");
         } else if (polled.status === 1) {
           updateLoadingStep("setup");
         }
 
-        // Only check timeout when NOT in queue mode (i.e., during setup/starting)
         if (!isInQueueMode && attempt - timeoutStartAttempt >= maxAttempts) {
           throw new Error(`Session did not become ready in time (${Math.round(SESSION_READY_TIMEOUT_MS / 1000)}s)`);
         }
       }
 
-      // finalSession is guaranteed to be set here (we only exit the loop via break when session is ready)
-      // Timeout only applies during setup/starting phase, not during queue wait
-
       setQueuePosition(undefined);
       updateLoadingStep("connecting");
 
-      // Use the polled session data which has the latest signaling info
       const sessionToConnect = sessionRef.current ?? finalSession ?? newSession;
-      console.log("Connecting signaling with:", {
-        sessionId: sessionToConnect.sessionId,
-        signalingServer: sessionToConnect.signalingServer,
-        signalingUrl: sessionToConnect.signalingUrl,
-        status: sessionToConnect.status,
-      });
-
       await window.openNow.connectSignaling({
         sessionId: sessionToConnect.sessionId,
         signalingServer: sessionToConnect.signalingServer,
@@ -1148,7 +1541,9 @@ export function App(): JSX.Element {
     streamStatus,
   ]);
 
+  // ---------------------------------------------------------------------------
   // Stop stream handler
+  // ---------------------------------------------------------------------------
   const handleStopStream = useCallback(async () => {
     try {
       resolveExitPrompt(false);
@@ -1163,6 +1558,7 @@ export function App(): JSX.Element {
           serverIp: current.serverIp,
           zone: current.zone,
           sessionId: current.sessionId,
+          accountId: "primary",
         });
       }
 
@@ -1224,7 +1620,9 @@ export function App(): JSX.Element {
     await handleStopStream();
   }, [handleStopStream, releasePointerLockIfNeeded, requestExitPrompt, streamStatus, streamingGame?.title]);
 
+  // ---------------------------------------------------------------------------
   // Keyboard shortcuts
+  // ---------------------------------------------------------------------------
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement | null;
@@ -1254,8 +1652,6 @@ export function App(): JSX.Element {
 
       const isPasteShortcut = e.key.toLowerCase() === "v" && !e.altKey && (isMac ? e.metaKey : e.ctrlKey);
       if (streamStatus === "streaming" && isPasteShortcut) {
-        // Always stop local/browser paste behavior while streaming.
-        // If clipboard paste is enabled, send clipboard text into the stream.
         e.preventDefault();
         e.stopPropagation();
         e.stopImmediatePropagation();
@@ -1330,7 +1726,6 @@ export function App(): JSX.Element {
       }
     };
 
-    // Use capture phase so app shortcuts run before stream input capture listeners.
     window.addEventListener("keydown", handleKeyDown, true);
     return () => window.removeEventListener("keydown", handleKeyDown, true);
   }, [
@@ -1344,7 +1739,9 @@ export function App(): JSX.Element {
     streamStatus,
   ]);
 
+  // ---------------------------------------------------------------------------
   // Filter games by search
+  // ---------------------------------------------------------------------------
   const filteredGames = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
     if (!query) return games;
@@ -1395,7 +1792,9 @@ export function App(): JSX.Element {
     return null;
   }, [gameTitleByAppId, navbarActiveSession, session?.sessionId, streamingGame?.title]);
 
+  // ---------------------------------------------------------------------------
   // Show login screen if not authenticated
+  // ---------------------------------------------------------------------------
   if (!authSession) {
     return (
       <>
@@ -1466,6 +1865,13 @@ export function App(): JSX.Element {
             onToggleMicrophone={() => {
               clientRef.current?.toggleMicrophone();
             }}
+            // Bypass queue props
+            hasSecondaryAccount={!!secondaryAuthSession}
+            bypassQueueStatus={bypassQueueStatus}
+            bypassQueuePosition={bypassQueuePosition}
+            onStartBypassQueue={() => { void handleStartBypassQueue(); }}
+            onCancelBypassQueue={handleCancelBypassQueue}
+            onSwitchToSecondary={() => { void handleSwitchToSecondary(); }}
           />
         )}
         {streamStatus !== "streaming" && (
@@ -1503,7 +1909,9 @@ export function App(): JSX.Element {
     );
   }
 
+  // ---------------------------------------------------------------------------
   // Main app layout
+  // ---------------------------------------------------------------------------
   return (
     <div className="app-container">
       {startupRefreshNotice && (
@@ -1557,6 +1965,12 @@ export function App(): JSX.Element {
             settings={settings}
             regions={regions}
             onSettingChange={updateSetting}
+            // Secondary account props
+            secondaryAuthSession={secondaryAuthSession}
+            isLoggingInSecondary={isLoggingInSecondary}
+            secondaryLoginError={secondaryLoginError}
+            onLoginSecondary={() => { void handleLoginSecondary(); }}
+            onLogoutSecondary={() => { void handleLogoutSecondary(); }}
           />
         )}
       </main>

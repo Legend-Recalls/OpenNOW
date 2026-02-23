@@ -1,7 +1,8 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import type { JSX } from "react";
-import { Maximize, Minimize, Gamepad2, Loader2, LogOut, Clock3, AlertTriangle, Mic, MicOff } from "lucide-react";
+import { Maximize, Minimize, Gamepad2, Loader2, LogOut, Clock3, AlertTriangle, Mic, MicOff, Zap, X } from "lucide-react";
 import type { StreamDiagnostics } from "../gfn/webrtcClient";
+import type { BypassQueueStatus } from "../App";
 
 interface StreamViewProps {
   videoRef: React.Ref<HTMLVideoElement>;
@@ -42,6 +43,13 @@ interface StreamViewProps {
   onCancelExit: () => void;
   onEndSession: () => void;
   onToggleMicrophone?: () => void;
+  // Bypass queue props
+  hasSecondaryAccount?: boolean;
+  bypassQueueStatus?: BypassQueueStatus;
+  bypassQueuePosition?: number;
+  onStartBypassQueue?: () => void;
+  onCancelBypassQueue?: () => void;
+  onSwitchToSecondary?: () => void;
 }
 
 function getRttColor(rttMs: number): string {
@@ -117,6 +125,12 @@ export function StreamView({
   onEndSession,
   onToggleMicrophone,
   hideStreamButtons = false,
+  hasSecondaryAccount = false,
+  bypassQueueStatus = "idle",
+  bypassQueuePosition,
+  onStartBypassQueue,
+  onCancelBypassQueue,
+  onSwitchToSecondary,
 }: StreamViewProps): JSX.Element {
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [showHints, setShowHints] = useState(true);
@@ -451,6 +465,64 @@ export function StreamView({
         >
           <LogOut size={18} />
         </button>
+      )}
+
+      {/* Bypass queue controls */}
+      {!isConnecting && !exitPrompt.open && (
+        <div className="sv-bypass">
+          {bypassQueueStatus === "idle" && hasSecondaryAccount && onStartBypassQueue && (
+            <button
+              type="button"
+              className="sv-bypass-btn"
+              onClick={onStartBypassQueue}
+              title="Start a bypass queue on your secondary account so you can switch without waiting"
+            >
+              <Zap size={14} />
+              Start Bypass Queue
+            </button>
+          )}
+
+          {bypassQueueStatus === "queuing" && (
+            <div className="sv-bypass-status">
+              <Loader2 size={14} className="sv-bypass-spin" />
+              <span>
+                Bypass Queue{bypassQueuePosition !== undefined && bypassQueuePosition > 0
+                  ? `: #${bypassQueuePosition}`
+                  : ": Waiting..."}
+              </span>
+              {onCancelBypassQueue && (
+                <button
+                  type="button"
+                  className="sv-bypass-cancel"
+                  onClick={onCancelBypassQueue}
+                  title="Cancel bypass queue"
+                  aria-label="Cancel bypass queue"
+                >
+                  <X size={12} />
+                </button>
+              )}
+            </div>
+          )}
+
+          {bypassQueueStatus === "ready" && onSwitchToSecondary && (
+            <button
+              type="button"
+              className="sv-bypass-switch-btn"
+              onClick={onSwitchToSecondary}
+              title="Switch to the secondary session (stops current session)"
+            >
+              <Zap size={16} />
+              Switch Session
+            </button>
+          )}
+
+          {bypassQueueStatus === "switching" && (
+            <div className="sv-bypass-status sv-bypass-status--switching">
+              <Loader2 size={14} className="sv-bypass-spin" />
+              <span>Switching...</span>
+            </div>
+          )}
+        </div>
       )}
 
       {/* Keyboard hints */}

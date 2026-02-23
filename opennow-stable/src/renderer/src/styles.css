@@ -2677,6 +2677,248 @@ body.controller-mode {
 }
 
 
+
+
+/* ======================================================
+   BYPASS QUEUE — Stream overlay controls (.sv-bypass-)
+   ====================================================== */
+@keyframes bypass-pulse {
+  0%, 100% { box-shadow: 0 0 12px rgba(88, 217, 138, 0.45), 0 4px 16px rgba(88, 217, 138, 0.25); }
+  50% { box-shadow: 0 0 24px rgba(88, 217, 138, 0.7), 0 6px 24px rgba(88, 217, 138, 0.4); }
+}
+
+/* Container positioned bottom-left above keyboard hints */
+.sv-bypass {
+  position: fixed;
+  bottom: 68px;
+  left: 18px;
+  z-index: 1001;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  pointer-events: none;
+}
+
+.sv-bypass > * {
+  pointer-events: auto;
+}
+
+/* "Start Bypass Queue" button */
+.sv-bypass-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: var(--r-sm);
+  border: 1px solid rgba(88, 217, 138, 0.3);
+  background: rgba(10, 10, 12, 0.88);
+  color: var(--accent);
+  font-size: 0.74rem;
+  font-weight: 700;
+  font-family: inherit;
+  cursor: pointer;
+  transition: border-color var(--t-fast), background var(--t-fast), color var(--t-fast), opacity var(--t-fast);
+  opacity: 0.75;
+  backdrop-filter: blur(4px);
+}
+
+.sv-bypass-btn:hover {
+  opacity: 1;
+  background: rgba(15, 24, 18, 0.95);
+  border-color: rgba(88, 217, 138, 0.55);
+}
+
+/* Queuing status chip */
+.sv-bypass-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 10px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--panel-border);
+  background: rgba(10, 10, 12, 0.9);
+  color: var(--ink-soft);
+  font-size: 0.74rem;
+  font-weight: 600;
+  font-family: inherit;
+  backdrop-filter: blur(4px);
+}
+
+.sv-bypass-status--switching {
+  color: var(--accent);
+  border-color: rgba(88, 217, 138, 0.3);
+}
+
+.sv-bypass-spin {
+  animation: spin 1s linear infinite;
+  flex-shrink: 0;
+}
+
+.sv-bypass-cancel {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 4px;
+  border: 1px solid var(--panel-border);
+  background: transparent;
+  color: var(--ink-muted);
+  cursor: pointer;
+  transition: background var(--t-fast), color var(--t-fast), border-color var(--t-fast);
+  flex-shrink: 0;
+  padding: 0;
+  font-family: inherit;
+}
+
+.sv-bypass-cancel:hover {
+  background: var(--error-bg);
+  color: var(--error);
+  border-color: var(--error-border);
+}
+
+/* "Switch Session" button — prominent, pulsing */
+.sv-bypass-switch-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 9px 16px;
+  border-radius: var(--r-sm);
+  border: 1px solid color-mix(in srgb, var(--accent) 60%, transparent);
+  background: linear-gradient(135deg, rgba(88, 217, 138, 0.28), rgba(88, 217, 138, 0.14));
+  color: #d7ffe8;
+  font-size: 0.84rem;
+  font-weight: 800;
+  font-family: inherit;
+  letter-spacing: 0.01em;
+  cursor: pointer;
+  animation: bypass-pulse 1.8s ease-in-out infinite;
+  backdrop-filter: blur(4px);
+  transition: transform var(--t-fast), filter var(--t-fast);
+}
+
+.sv-bypass-switch-btn:hover {
+  transform: translateY(-1px) scale(1.03);
+  filter: brightness(1.1);
+}
+
+.sv-bypass-switch-btn:active {
+  transform: translateY(0) scale(1);
+}
+
+
+/* ======================================================
+   BYPASS QUEUE — Settings page account cards
+   ====================================================== */
+.bypass-account-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--panel-border);
+  background: var(--bg-a);
+}
+
+.bypass-account-card--primary {
+  color: var(--ink-muted);
+}
+
+.bypass-account-card--secondary {
+  color: var(--accent);
+  border-color: rgba(88, 217, 138, 0.2);
+  background: linear-gradient(180deg, rgba(88, 217, 138, 0.06), var(--bg-a));
+}
+
+.bypass-account-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+
+.bypass-account-name {
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bypass-account-hint {
+  font-size: 0.76rem;
+  color: var(--ink-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bypass-account-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--panel-border-solid);
+  background: var(--bg-c);
+  font-size: 0.8rem;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color var(--t-fast), background var(--t-fast), border-color var(--t-fast);
+  flex-shrink: 0;
+}
+
+.bypass-account-btn--login {
+  color: var(--accent);
+  border-color: rgba(88, 217, 138, 0.3);
+  background: var(--accent-surface);
+}
+
+.bypass-account-btn--login:hover:not(:disabled) {
+  background: var(--accent-surface-strong);
+  border-color: rgba(88, 217, 138, 0.5);
+}
+
+.bypass-account-btn--login:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.bypass-account-btn--logout {
+  color: var(--ink-muted);
+}
+
+.bypass-account-btn--logout:hover {
+  color: var(--error);
+  background: var(--error-bg);
+  border-color: var(--error-border);
+}
+
+.bypass-account-empty {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.bypass-account-error {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: var(--error-bg);
+  border: 1px solid var(--error-border);
+  border-radius: var(--r-sm);
+  color: var(--error);
+  font-size: 0.8rem;
+  font-weight: 500;
+}
+
+
 /* ======================================================
    REDUCED MOTION
    ====================================================== */

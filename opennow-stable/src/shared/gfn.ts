@@ -122,10 +122,12 @@ export interface AuthSession {
 
 export interface AuthLoginRequest {
   providerIdpId?: string;
+  accountId?: "primary" | "secondary";
 }
 
 export interface AuthSessionRequest {
   forceRefresh?: boolean;
+  accountId?: "primary" | "secondary";
 }
 
 export type AuthRefreshOutcome = "not_attempted" | "refreshed" | "failed" | "missing_refresh_token";
@@ -145,6 +147,7 @@ export interface AuthSessionResult {
 
 export interface RegionsFetchRequest {
   token?: string;
+  accountId?: "primary" | "secondary";
 }
 
 export interface StreamRegion {
@@ -155,18 +158,21 @@ export interface StreamRegion {
 export interface GamesFetchRequest {
   token?: string;
   providerStreamingBaseUrl?: string;
+  accountId?: "primary" | "secondary";
 }
 
 export interface ResolveLaunchIdRequest {
   token?: string;
   providerStreamingBaseUrl?: string;
   appIdOrUuid: string;
+  accountId?: "primary" | "secondary";
 }
 
 export interface SubscriptionFetchRequest {
   token?: string;
   providerStreamingBaseUrl?: string;
   userId: string;
+  accountId?: "primary" | "secondary";
 }
 
 export interface GameVariant {
@@ -204,6 +210,7 @@ export interface SessionCreateRequest {
   accountLinked?: boolean;
   zone: string;
   settings: StreamSettings;
+  accountId?: "primary" | "secondary";
 }
 
 export interface SessionPollRequest {
@@ -212,6 +219,7 @@ export interface SessionPollRequest {
   serverIp?: string;
   zone: string;
   sessionId: string;
+  accountId?: "primary" | "secondary";
 }
 
 export interface SessionStopRequest {
@@ -220,6 +228,7 @@ export interface SessionStopRequest {
   serverIp?: string;
   zone: string;
   sessionId: string;
+  accountId?: "primary" | "secondary";
 }
 
 export interface IceServer {
@@ -267,6 +276,7 @@ export interface SessionClaimRequest {
   serverIp: string;
   appId?: string;
   settings?: StreamSettings;
+  accountId?: "primary" | "secondary";
 }
 
 export interface SignalingConnectRequest {
@@ -303,7 +313,7 @@ export interface OpenNowApi {
   getLoginProviders(): Promise<LoginProvider[]>;
   getRegions(input?: RegionsFetchRequest): Promise<StreamRegion[]>;
   login(input: AuthLoginRequest): Promise<AuthSession>;
-  logout(): Promise<void>;
+  logout(accountId?: "primary" | "secondary"): Promise<void>;
   fetchSubscription(input: SubscriptionFetchRequest): Promise<SubscriptionInfo>;
   fetchMainGames(input: GamesFetchRequest): Promise<GameInfo[]>;
   fetchLibraryGames(input: GamesFetchRequest): Promise<GameInfo[]>;
@@ -313,7 +323,7 @@ export interface OpenNowApi {
   pollSession(input: SessionPollRequest): Promise<SessionInfo>;
   stopSession(input: SessionStopRequest): Promise<void>;
   /** Get list of active sessions (status 2 or 3) */
-  getActiveSessions(token?: string, streamingBaseUrl?: string): Promise<ActiveSessionInfo[]>;
+  getActiveSessions(token?: string, streamingBaseUrl?: string, accountId?: "primary" | "secondary"): Promise<ActiveSessionInfo[]>;
   /** Claim/resume an existing session */
   claimSession(input: SessionClaimRequest): Promise<SessionInfo>;
   /** Show dialog asking user how to handle session conflict */

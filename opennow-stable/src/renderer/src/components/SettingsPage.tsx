@@ -1,4 +1,4 @@
-import { Globe, Save, Check, Search, X, Loader, Zap, Mic, FileDown } from "lucide-react";
+import { Globe, Save, Check, Search, X, Loader, Zap, Mic, FileDown, LogIn, LogOut, User } from "lucide-react";
 import { useState, useCallback, useMemo, useEffect, useRef } from "react";
 import type { JSX } from "react";
 
@@ -10,6 +10,7 @@ import type {
   EntitledResolution,
   VideoAccelerationPreference,
   MicrophoneMode,
+  AuthSession,
 } from "@shared/gfn";
 import { colorQualityRequiresHevc } from "@shared/gfn";
 import { formatShortcutForDisplay, normalizeShortcut } from "../shortcuts";
@@ -18,6 +19,11 @@ interface SettingsPageProps {
   settings: Settings;
   regions: StreamRegion[];
   onSettingChange: <K extends keyof Settings>(key: K, value: Settings[K]) => void;
+  secondaryAuthSession?: AuthSession | null;
+  isLoggingInSecondary?: boolean;
+  secondaryLoginError?: string | null;
+  onLoginSecondary?: () => void;
+  onLogoutSecondary?: () => void;
 }
 
 const codecOptions: VideoCodec[] = ["H264", "H265", "AV1"];
@@ -432,7 +438,7 @@ async function testCodecSupport(): Promise<CodecTestResult[]> {
 
 /* ── Component ────────────────────────────────────────────────────── */
 
-export function SettingsPage({ settings, regions, onSettingChange }: SettingsPageProps): JSX.Element {
+export function SettingsPage({ settings, regions, onSettingChange, secondaryAuthSession, isLoggingInSecondary, secondaryLoginError, onLoginSecondary, onLogoutSecondary }: SettingsPageProps): JSX.Element {
   const [savedIndicator, setSavedIndicator] = useState(false);
   const [regionSearch, setRegionSearch] = useState("");
   const [regionDropdownOpen, setRegionDropdownOpen] = useState(false);
@@ -1373,6 +1379,91 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
                       <div className="region-dropdown-empty">No regions match &ldquo;{regionSearch}&rdquo;</div>
                     )}
                   </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </section>
+
+        {/* ── Accounts (Bypass Queue) ──────────────────── */}
+        <section className="settings-section">
+          <div className="settings-section-header">
+            <h2>Accounts</h2>
+          </div>
+          <div className="settings-rows">
+            {/* Primary account — read-only info */}
+            <div className="settings-row settings-row--column">
+              <label className="settings-label">Primary Account</label>
+              <div className="bypass-account-card bypass-account-card--primary">
+                <User size={16} />
+                <div className="bypass-account-info">
+                  <span className="bypass-account-name">
+                    {/* Primary account details come from auth session in navbar; just show a note */}
+                    Logged in (see top bar)
+                  </span>
+                  <span className="bypass-account-hint">Your main streaming account</span>
+                </div>
+              </div>
+            </div>
+
+            {/* Secondary account for bypass queue */}
+            <div className="settings-row settings-row--column">
+              <label className="settings-label">
+                Secondary Account
+                <span className="settings-hint">Used for Bypass Queue — queues up while you play on your primary account</span>
+              </label>
+
+              {secondaryAuthSession ? (
+                <div className="bypass-account-card bypass-account-card--secondary">
+                  <User size={16} />
+                  <div className="bypass-account-info">
+                    <span className="bypass-account-name">
+                      {secondaryAuthSession.user.displayName || secondaryAuthSession.user.email || "Secondary Account"}
+                    </span>
+                    {secondaryAuthSession.user.email && secondaryAuthSession.user.displayName && (
+                      <span className="bypass-account-hint">{secondaryAuthSession.user.email}</span>
+                    )}
+                  </div>
+                  <button
+                    type="button"
+                    className="bypass-account-btn bypass-account-btn--logout"
+                    onClick={onLogoutSecondary}
+                    title="Sign out secondary account"
+                  >
+                    <LogOut size={14} />
+                    Sign Out
+                  </button>
+                </div>
+              ) : (
+                <div className="bypass-account-empty">
+                  {secondaryLoginError && (
+                    <div className="bypass-account-error">
+                      <span className="login-error-dot" />
+                      {secondaryLoginError}
+                    </div>
+                  )}
+                  <button
+                    type="button"
+                    className="bypass-account-btn bypass-account-btn--login"
+                    onClick={onLoginSecondary}
+                    disabled={isLoggingInSecondary}
+                  >
+                    {isLoggingInSecondary ? (
+                      <>
+                        <Loader size={14} className="settings-loading-icon" style={{ animationPlayState: "running" }} />
+                        Signing in...
+                      </>
+                    ) : (
+                      <>
+                        <LogIn size={14} />
+                        Sign In Secondary Account
+                      </>
+                    )}
+                  </button>
+                  <span className="settings-subtle-hint">
+                    Sign in with a second GeForce NOW account to enable the Bypass Queue feature.
+                    The same login provider as your primary account will be used.
+                  </span>
                 </div>
               )}
             </div>

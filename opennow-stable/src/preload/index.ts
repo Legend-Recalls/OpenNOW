@@ -28,7 +28,7 @@ const api: PreloadApi = {
   getLoginProviders: () => ipcRenderer.invoke(IPC_CHANNELS.AUTH_GET_PROVIDERS),
   getRegions: (input: RegionsFetchRequest = {}) => ipcRenderer.invoke(IPC_CHANNELS.AUTH_GET_REGIONS, input),
   login: (input: AuthLoginRequest) => ipcRenderer.invoke(IPC_CHANNELS.AUTH_LOGIN, input),
-  logout: () => ipcRenderer.invoke(IPC_CHANNELS.AUTH_LOGOUT),
+  logout: (accountId?: "primary" | "secondary") => ipcRenderer.invoke(IPC_CHANNELS.AUTH_LOGOUT, accountId),
   fetchSubscription: (input: SubscriptionFetchRequest) =>
     ipcRenderer.invoke(IPC_CHANNELS.SUBSCRIPTION_FETCH, input),
   fetchMainGames: (input: GamesFetchRequest) => ipcRenderer.invoke(IPC_CHANNELS.GAMES_FETCH_MAIN, input),
@@ -40,8 +40,8 @@ const api: PreloadApi = {
   createSession: (input: SessionCreateRequest) => ipcRenderer.invoke(IPC_CHANNELS.CREATE_SESSION, input),
   pollSession: (input: SessionPollRequest) => ipcRenderer.invoke(IPC_CHANNELS.POLL_SESSION, input),
   stopSession: (input: SessionStopRequest) => ipcRenderer.invoke(IPC_CHANNELS.STOP_SESSION, input),
-  getActiveSessions: (token?: string, streamingBaseUrl?: string) =>
-    ipcRenderer.invoke(IPC_CHANNELS.GET_ACTIVE_SESSIONS, token, streamingBaseUrl),
+  getActiveSessions: (token?: string, streamingBaseUrl?: string, accountId?: "primary" | "secondary") =>
+    ipcRenderer.invoke(IPC_CHANNELS.GET_ACTIVE_SESSIONS, token, streamingBaseUrl, accountId),
   claimSession: (input: SessionClaimRequest) => ipcRenderer.invoke(IPC_CHANNELS.CLAIM_SESSION, input),
   showSessionConflictDialog: () => ipcRenderer.invoke(IPC_CHANNELS.SESSION_CONFLICT_DIALOG),
   connectSignaling: (input: SignalingConnectRequest) =>
