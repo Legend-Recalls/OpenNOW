@@ -455,6 +455,7 @@ function registerIpcHandlers(): void {
   ipcMain.handle(
     IPC_CHANNELS.CONNECT_SIGNALING,
     async (_event, payload: SignalingConnectRequest): Promise<void> => {
+      console.log(`[IPC] connectSignaling called: sessionId=${payload.sessionId}, signalingServer=${payload.signalingServer}, signalingUrl=${payload.signalingUrl ?? "none"}`);
       const nextKey = `${payload.sessionId}|${payload.signalingServer}|${payload.signalingUrl ?? ""}`;
       if (signalingClient && signalingClientKey === nextKey) {
         console.log("[Signaling] Reuse existing signaling connection (duplicate connect request ignored)");
@@ -462,9 +463,11 @@ function registerIpcHandlers(): void {
       }
 
       if (signalingClient) {
+        console.log("[Signaling] Disconnecting existing client before new connection");
         signalingClient.disconnect();
       }
 
+      console.log("[Signaling] Creating new GfnSignalingClient...");
       signalingClient = new GfnSignalingClient(
         payload.signalingServer,
         payload.sessionId,
@@ -472,7 +475,9 @@ function registerIpcHandlers(): void {
       );
       signalingClientKey = nextKey;
       signalingClient.onEvent(emitToRenderer);
+      console.log("[Signaling] Calling signalingClient.connect()...");
       await signalingClient.connect();
+      console.log("[Signaling] signalingClient.connect() completed successfully");
     },
   );
 
