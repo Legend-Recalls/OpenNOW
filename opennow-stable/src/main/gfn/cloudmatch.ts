@@ -561,24 +561,17 @@ export async function pollSession(input: SessionPollRequest): Promise<SessionInf
   const base = resolvePollStopBase(input.zone, input.streamingBaseUrl, input.serverIp);
   const url = `${base}/v2/session/${input.sessionId}`;
   const headers = requestHeaders(input.token);
-
-  console.log(`[CloudMatch] pollSession: URL=${url}, zone=${input.zone}, sessionId=${input.sessionId.substring(0,8)}...`);
-
   const response = await fetch(url, {
     method: "GET",
     headers,
   });
 
   const text = await response.text();
-  console.log(`[CloudMatch] pollSession response: status=${response.status}, bodyLength=${text.length}`);
-
   if (!response.ok) {
-    console.error(`[CloudMatch] pollSession FAILED: HTTP ${response.status}, body=${text.substring(0, 200)}`);
     throw SessionError.fromResponse(response.status, text);
   }
 
   const payload = JSON.parse(text) as CloudMatchResponse;
-  console.log(`[CloudMatch] pollSession parsed: session.status=${payload.session.status}, queuePosition=${payload.session.queuePosition ?? "none"}`);
 
   // Match Rust behavior: if the poll was routed through the zone load balancer
   // and the response now contains a real server IP in connectionInfo, re-poll

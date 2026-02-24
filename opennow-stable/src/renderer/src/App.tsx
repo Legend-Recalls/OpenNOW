@@ -896,7 +896,6 @@ export function App(): JSX.Element {
       console.log(`[App] Signaling event: ${event.type}`, event.type === "offer" ? `(SDP ${event.sdp.length} chars)` : "", event.type === "remote-ice" ? event.candidate : "");
       try {
         if (event.type === "offer") {
-          console.log(`[App] Received offer, current streamStatus=${streamStatus}, sessionId=${sessionRef.current?.sessionId}`);
           const activeSession = sessionRef.current;
           if (!activeSession) {
             console.warn("[App] Received offer but no active session in sessionRef!");
@@ -940,7 +939,6 @@ export function App(): JSX.Element {
               maxBitrateKbps: settings.maxBitrateMbps * 1000,
             });
             setLaunchError(null);
-            console.log(`[App] Setting streamStatus to: streaming`);
             setStreamStatus("streaming");
             setSessionStartedAtMs((current) => current ?? Date.now());
           }
@@ -1605,11 +1603,8 @@ export function App(): JSX.Element {
       setSession(newSession);
       setQueuePosition(newSession.queuePosition);
 
-      console.log(`[Launch] Session created: sessionId=${newSession.sessionId}, status=${newSession.status}, queuePosition=${newSession.queuePosition ?? "none"}`);
-
       let finalSession: SessionInfo | null = null;
       let isInQueueMode = (newSession.queuePosition ?? 0) > 1;
-      console.log(`[Launch] Initial queue mode: ${isInQueueMode} (queuePosition=${newSession.queuePosition ?? 0})`);
       let timeoutStartAttempt = 1;
       const maxAttempts = Math.ceil(SESSION_READY_TIMEOUT_MS / SESSION_READY_POLL_INTERVAL_MS);
       let attempt = 0;
@@ -1636,23 +1631,18 @@ export function App(): JSX.Element {
         }
 
         console.log(
-          `[Launch] Poll #${attempt}: status=${polled.status}, queuePosition=${polled.queuePosition ?? "none"}, serverIp=${polled.serverIp}, isInQueueMode=${isInQueueMode}, wasInQueueMode=${wasInQueueMode}, transition=${wasInQueueMode && !isInQueueMode ? "queue->setup" : "no-change"}`,
+          `Poll attempt ${attempt}: status=${polled.status}, queuePosition=${polled.queuePosition ?? "n/a"}, serverIp=${polled.serverIp}, queueMode=${isInQueueMode}`,
         );
 
         if (isSessionReadyForConnect(polled.status)) {
-          console.log(`[Launch] Session ready for connect! status=${polled.status}, breaking polling loop`);
           finalSession = polled;
           break;
         }
 
         if (isInQueueMode) {
-          console.log(`[Launch] Setting status to: queue (isInQueueMode=${isInQueueMode})`);
           updateLoadingStep("queue");
         } else if (polled.status === 1) {
-          console.log(`[Launch] Setting status to: setup (status=1, isInQueueMode=${isInQueueMode})`);
           updateLoadingStep("setup");
-        } else {
-          console.log(`[Launch] No status update: status=${polled.status}, isInQueueMode=${isInQueueMode}`);
         }
 
         if (!isInQueueMode && attempt - timeoutStartAttempt >= maxAttempts) {
@@ -1660,18 +1650,15 @@ export function App(): JSX.Element {
         }
       }
 
-      console.log(`[Launch] Setting status to: connecting`);
       setQueuePosition(undefined);
       updateLoadingStep("connecting");
 
       const sessionToConnect = sessionRef.current ?? finalSession ?? newSession;
-      console.log(`[Launch] Connecting to signaling: sessionId=${sessionToConnect.sessionId}, signalingServer=${sessionToConnect.signalingServer}, signalingUrl=${sessionToConnect.signalingUrl}`);
       await window.openNow.connectSignaling({
         sessionId: sessionToConnect.sessionId,
         signalingServer: sessionToConnect.signalingServer,
         signalingUrl: sessionToConnect.signalingUrl,
       });
-      console.log(`[Launch] connectSignaling call completed`);
     } catch (error) {
       console.error("Launch failed:", error);
       setLaunchError(toLaunchErrorState(error, loadingStep));
